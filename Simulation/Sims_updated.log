@@ -1,0 +1,292 @@
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  C:\Users\ZaihangZhang\OneDrive\MasterThesis\MachineLearninginAgriculturalTradeResearch\code\Simulation\Sims_updated.log
+  log type:  text
+ opened on:  13 Dec 2025, 17:00:44
+
+. 
+. program drop _all
+
+. program define tbs
+  1. syntax  [if] [in]
+  2. marksample touse  
+  3. capture lasso poisson y (z) x* if `touse', selection(plugin)
+  4. if _rc==0 { 
+  5. local regsbs `e(othervars_sel)'
+  6. global tots $tots `e(othervars_sel)'
+  7. gettoken regs1 : regsbs
+  8. if "`regs1'"=="x1"      local bs=1 
+  9. else local bs=0 
+ 10. mat bs=`bs'*I(1)
+ 11. global ttots=$ttots+1
+ 12. mat b$ttots=e(b)
+ 13. global btots $btots b$ttots
+ 14. }
+ 15. end 
+
+. 
+. qui local rep = 1000
+
+. qui local od  = 0.3 
+
+. qui local beta = 0.2   
+
+. foreach obs in 250 1000 4000 { // 
+  2. qui local tph = 100+`obs'
+  3. foreach rho in  0.99 0.90 0.75 { // 0.75 0.90  0.99
+  4. foreach f in 5 10 20 { //
+  5. qui local p = 5*ceil(sqrt(`obs'))
+  6. qui local smpl= max(`tph',`rep')
+  7. qui set obs `smpl'
+  8. 
+. qui g cv=. if _n<=`rep'
+  9. qui g ad=. if _n<=`rep'
+ 10. qui g pi=. if _n<=`rep'
+ 11. qui g pii=. if _n<=`rep'
+ 12. qui g bs=. if _n<=`rep'
+ 13. qui g en=. if _n<=`rep'
+ 14. 
+. qui g kcv=. if _n<=`rep'
+ 15. qui g kad=. if _n<=`rep'
+ 16. qui g kpi=. if _n<=`rep'
+ 17. qui g kpii=. if _n<=`rep'
+ 18. qui g kbs=. if _n<=`rep'
+ 19. qui g ken=. if _n<=`rep'
+ 20. 
+. qui g mcv=. if _n<=`rep'
+ 21. qui g mad=. if _n<=`rep'
+ 22. qui g mpi=. if _n<=`rep'
+ 23. qui g mpii=. if _n<=`rep'
+ 24. qui g mbs=. if _n<=`rep'
+ 25. qui g men=. if _n<=`rep'
+ 26. 
+. qui g lcv=. if _n<=`rep'
+ 27. qui g lad=. if _n<=`rep'
+ 28. qui g lpi=. if _n<=`rep'
+ 29. qui g lpii=. if _n<=`rep'
+ 30. qui g lbs=. if _n<=`rep'
+ 31. qui g len=. if _n<=`rep'
+ 32. 
+. qui g zero=. if _n<=`rep'
+ 33.  
+. set seed 20022021
+ 34. qui local f1=`f'+1
+ 35. 
+. forvalues r = 1/`rep' { 
+ 36. mat v=J(`f',`f',`rho')+(1-`rho')*I(`f')
+ 37. 
+. drawnorm x1-x`f' , corr(v) cstorage(full) 
+ 38. drawnorm x`f1'-x`p' , 
+ 39. qui g z=rnormal()
+ 40. *forvalues j = 1/`p' {  
+.     *qui replace x`j'=x`j'<invnormal(0.5) // if _n<=`obs'/2
+.         *qui replace x`j'=0 if _n>`obs'/2
+. *}
+. 
+. qui g y=(exp(1+`beta'*x1+z+`od'*rnormal())) if _n<=`tph'
+ 41. 
+. *****  BS *****
+. global tots
+ 42. global btots
+ 43. global ttots=0
+ 44. capture bs bs[1,1], rep(19): tbs if _n<=`obs'
+ 45. if _rc==0 { 
+ 46. mat _bbs=e(b)
+ 47. mat bb_bbs=e(b_bs)
+ 48. if _bbs[1,1]==1|bb_bbs[1,1]>0 qui replace bs=1 in `r'
+ 49. else qui replace bs=0 in `r'
+ 50.  
+. qui _rmcoll $tots if _n<=`obs', forcedrop
+ 51. qui replace kbs=wordcount("`r(varlist)'") in `r'
+ 52. capture ppml y `r(varlist)' z if _n<=`obs'
+ 53. if _rc==0 { 
+ 54. qui predict fit if _n<=`tph'&_n>`obs', mu 
+ 55. qui g res=(y-fit)^2  
+ 56. su res , meanonly
+ 57. qui replace mbs=r(mean) in `r'
+ 58. drop fit res
+ 59. }
+ 60. 
+. qui g double fit=0 if _n<=`tph'&_n>`obs'
+ 61. local c_b=0
+ 62. foreach betas in $btots {
+ 63. local c_b=`c_b'+1       
+ 64. qui mat score f=`betas' if _n<=`tph'&_n>`obs'
+ 65. qui replace fit=fit+exp(f) if _n<=`tph'&_n>`obs'
+ 66. drop f
+ 67. }
+ 68. qui g res=(y-fit/`c_b')^2  
+ 69. su res, meanonly
+ 70. qui replace lbs=r(mean) in `r'
+ 71. drop fit res
+ 72. macro drop tots ttots btots
+ 73. }
+ 74. 
+. *****  CV *****
+. capture lasso poisson y (z) x* if _n<=`obs'
+ 75. if _rc==0 { 
+ 76. qui replace kcv=e(k_nonzero_sel)-1 in `r'
+ 77. if e(k_nonzero_sel)==1  qui replace cv=0 in `r'
+ 78. else {
+ 79. local regs `e(othervars_sel)'
+ 80. gettoken regs1 : regs
+ 81. if "`regs1'"=="x1" qui replace cv=1 in `r'
+ 82. else  qui replace cv=0 in `r'
+ 83. }
+ 84. qui predict fit if _n<=`tph'&_n>`obs', n 
+ 85. qui g res=(y-fit)^2
+ 86. su res, meanonly
+ 87. qui replace lcv=r(mean) in `r'
+ 88. drop fit res
+ 89.  
+. qui predict fit if _n<=`tph'&_n>`obs', n post 
+ 90. qui g res=(y-fit)^2
+ 91. su res, meanonly
+ 92. qui replace mcv=r(mean) in `r'
+ 93. drop fit res
+ 94. }
+ 95. 
+. *****  AL *****
+. capture lasso poisson y (z) x* if _n<=`obs', selection(adaptive)
+ 96. if _rc==0 { 
+ 97. qui replace kad=e(k_nonzero_sel)-1 in `r'
+ 98. if e(k_nonzero_sel)==1 qui replace ad=0 in `r'
+ 99. else {
+100. local regsad `e(othervars_sel)'
+101. gettoken regs2 : regsad
+102. if "`regs2'"=="x1" qui replace ad=1 in `r'
+103. else qui replace ad=0 in `r'
+104. }
+105. qui predict fit if _n<=`tph'&_n>`obs', n 
+106. qui g res=(y-fit)^2 if _n<=`tph'&_n>`obs'
+107. su res if _n<=`tph'&_n>`obs' , meanonly
+108. qui replace lad=r(mean) in `r'
+109. drop fit res
+110. 
+. qui predict fit if _n<=`tph'&_n>`obs', n post
+111. qui g res=(y-fit)^2 if _n<=`tph'&_n>`obs'
+112. su res if _n<=`tph'&_n>`obs' , meanonly
+113. qui replace mad=r(mean) in `r'
+114. drop fit res
+115. }
+116. 
+. *****  EN *****
+. 
+. capture elasticnet poisson y (z) x* if _n<=`obs'
+117. if _rc==0 { 
+118. qui replace ken=e(k_nonzero_sel)-1 in `r'
+119. if e(k_nonzero_sel)==1 qui replace en=0 in `r'
+120. else {
+121. local regsen `e(othervars_sel)'
+122. gettoken regs2 : regsen
+123. if "`regs2'"=="x1" qui replace en=1 in `r'
+124. else qui replace en=0 in `r'
+125. }
+126. qui predict fit if _n<=`tph'&_n>`obs', n 
+127. qui g res=(y-fit)^2 if _n<=`tph'&_n>`obs'
+128. su res if _n<=`tph'&_n>`obs' , meanonly
+129. qui replace len=r(mean) in `r'
+130. drop fit res
+131. 
+. qui predict fit if _n<=`tph'&_n>`obs', n post
+132. qui g res=(y-fit)^2 if _n<=`tph'&_n>`obs'
+133. su res if _n<=`tph'&_n>`obs' , meanonly
+134. qui replace men=r(mean) in `r'
+135. drop fit res
+136. }
+137. 
+. *****  PI *****
+. local skip=0
+138. capture lasso poisson y (z) x* if _n<=`obs', selection(plugin)
+139. if _rc==0 {
+140. local regz `e(othervars_sel)'
+141. qui predict fit if _n<=`tph'&_n>`obs', n 
+142. qui g res=(y-fit)^2 if _n<=`tph'&_n>`obs'
+143. su res if _n<=`tph'&_n>`obs' , meanonly
+144. qui replace lpi=r(mean) in `r'
+145. drop fit res
+146. 
+. qui predict fit if _n<=`tph'&_n>`obs', n post 
+147. qui g res=(y-fit)^2 if _n<=`tph'&_n>`obs'
+148. su res if _n<=`tph'&_n>`obs' , meanonly
+149. qui replace mpi=r(mean) in `r'
+150. drop fit res
+151. 
+. qui replace kpi=e(k_nonzero_sel)-1 in `r'
+152. if e(k_nonzero_sel)==1  {
+153.    qui replace kpii=0 in `r'   
+154.    qui replace pi=0 in `r'
+155.    qui replace pii=0 in `r' 
+156.    qui replace mpii=mpi in `r'  
+157.    qui replace lpii=lpi in `r' 
+158.    qui replace zero=1 in `r'
+159. }
+160. else {
+161. qui replace zero=0 in `r'
+162. local regs `e(othervars_sel)'
+163. gettoken regs1 : regs
+164. if "`regs1'"=="x1" {
+165.     qui replace pi=1 in `r'
+166.         qui replace pii=1 in `r'
+167. }
+168. else {
+169.     qui replace pi=0 in `r'
+170.     qui replace pii=0 in `r' 
+171. }
+172. 
+. *****  IL *****
+. qui vl create xvars = (x*)
+173. qui vl drop (`regz'), user
+174.      qui local regsx `regz'
+175. foreach v in `regs' {
+176.  capture lasso linear `v' $xvars if _n<=`obs', selection(plugin, heteroskedastic)
+177.  if _rc!=0 local skip=1
+178.  qui local regsx `regsx' `e(allvars_sel)'
+179.  qui local regsi `e(allvars_sel)'
+180.  gettoken regs1i : regsi
+181.  if "`regs1i'"=="x1" qui replace pii=1 in `r'
+182. }
+183.         qui _rmcoll `regsx' if _n<=`obs', forcedrop
+184.         local regz `r(varlist)'
+185.         qui replace kpii=wordcount("`r(varlist)'") in `r'
+186. qui vl clear, user
+187. 
+. capture ppml y `regz' z if _n<=`obs'
+188. if _rc==0 { 
+189. qui predict fit if _n<=`tph'&_n>`obs', mu 
+190. qui g res=(y-fit)^2 if _n<=`tph'&_n>`obs'
+191. su res if _n<=`tph'&_n>`obs', meanonly
+192. qui replace mpii=r(mean) in `r'
+193. drop fit res
+194. }
+195. 
+. capture lasso poisson y (z) `regz'  if _n<=`obs', selection(plugin)
+196. if _rc==0 { 
+197. qui predict fit if _n<=`tph'&_n>`obs'
+198. qui g res=(y-fit)^2 if _n<=`tph'&_n>`obs'
+199. su res if _n<=`tph'&_n>`obs', meanonly
+200. qui replace lpii=r(mean) in `r'
+201. drop fit res
+202. }
+203. 
+. if `skip'==1 {
+204.     qui replace kpii=. in `r'
+205.         qui replace pii=. in `r'
+206.         qui replace mpii=. in `r'  
+207.     qui replace lpii=. in `r'
+208. }
+209. }
+210. }
+211. drop y x* z
+212. }
+213. di
+214. di  "P = " `p' ", OD = " `od' ", Rho = " `rho' ", N = " `obs' ", Beta = " `beta'  ", f = " `f'
+215.  
+. su cv  ad  pi  bs  pii  en if _n<=`rep'&cv!=.&ad!=.&pi!=.&pii!=.&en!=.
+216. su kcv kad kpi kbs kpii ken if _n<=`rep'&kcv!=.&kad!=.&kpi!=.&kpii!=.&ken!=.
+217. su lcv lad lpi lbs lpii len if _n<=`rep'&lcv!=.&lad!=.&lpi!=.&lpii!=.&len!=.
+218. su mcv mad mpi mbs mpii men if _n<=`rep'&mcv!=.&mad!=.&mpi!=.&mpii!=.&men!=.
+219. su zero
+220. drop cv* ad* pi* kcv kad kpi* mcv mad mpi* lcv lad lpi* zero bs kbs mbs lbs en ken men len
+221. }
+222. }

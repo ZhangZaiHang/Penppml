@@ -1,0 +1,150 @@
+cls
+clear all
+capture log close
+log using "C:\Users\ZaihangZhang\OneDrive\MasterThesis\MachineLearninginAgriculturalTradeResearch\code\Simulation\Sims_Overfitting.log", replace // 请修改您的路径
+
+// 设置模拟参数
+qui local rep = 1000       // 重复次数
+qui local od  = 0.3        // 过度分散参数
+qui local beta = 0.2       // x1 的真实系数
+
+// --- 开始主循环 ---
+foreach obs in 250 1000 4000 { 
+    qui local tph = 100 + `obs' // 训练集 + 100个测试集观测
+    
+    foreach rho in 0.99 0.90 0.75 { 
+        foreach f in 5 10 20 { 
+            
+            // 动态设置变量总数 P
+            qui local p = 5*ceil(sqrt(`obs'))
+            qui local smpl= max(`tph',`rep')
+            qui set obs `smpl'
+            
+            // --- 1. 初始化结果存储变量 ---
+            
+            // 预测误差 (MSPE) 存储变量
+            qui g mspe_under = .  // 欠拟合 (Under-fit)
+            qui g mspe_ideal = .  // 理想拟合 (Ideal-fit)
+            qui g mspe_full  = .  // 过拟合 (Full Model / Over-fit)
+            qui g mspe_lcv   = .  // Lasso CV
+            
+            // 变量选择 (Selection) 存储变量 (仅针对 Lasso CV)
+            qui g sel_lcv_x1 = .  // 是否正确选中 x1 (1=是, 0=否)
+            qui g num_vars   = .  // Lasso 选中的变量总数
+            
+            // 随机数种子，保证可重复性
+            set seed 20022021
+            qui local f1 = `f' + 1
+
+            // --- 2. 模拟循环 (replications) ---
+            forvalues r = 1/`rep' { 
+                
+                // A. 数据生成 (DGP) - 与原代码保持一致
+                // 生成相关系数矩阵 V
+                mat v = J(`f',`f',`rho') + (1-`rho')*I(`f')
+                
+                // 生成 x 变量
+                drawnorm x1-x`f', corr(v) cstorage(full) 
+                drawnorm x`f1'-x`p'
+                
+                // 生成 z 和 y
+                qui g z = rnormal()
+                qui g y = (exp(1 + `beta'*x1 + z + `od'*rnormal())) if _n <= `tph'
+                
+                // 定义训练集范围
+                local train "if _n <= `obs'"
+                // 定义测试集范围 (out-of-sample)
+                local test  "if _n <= `tph' & _n > `obs'"
+
+                // ---------------------------------------------
+                // B. 模型 1: 欠拟合 (Under-fitting)
+                // ---------------------------------------------
+                // 仅使用 z，漏掉 x1
+                capture lasso poisson y z `train'
+                if _rc == 0 {
+                    qui predict fit_u `test', n
+                    qui g res_sq = (y - fit_u)^2 `test'
+                    su res_sq `test', meanonly
+                    qui replace mspe_under = r(mean) in `r'
+                    drop fit_u res_sq
+                }
+
+                // ---------------------------------------------
+                // C. 模型 2: 理想拟合 (Ideal-fitting / Oracle)
+                // ---------------------------------------------
+                // 仅使用真实变量 z 和 x1
+                capture lasso poisson y z x1 `train'
+                if _rc == 0 {
+                    qui predict fit_i `test', n
+                    qui g res_sq = (y - fit_i)^2 `test'
+                    su res_sq `test', meanonly
+                    qui replace mspe_ideal = r(mean) in `r'
+                    drop fit_i res_sq
+                }
+
+                // ---------------------------------------------
+                // D. 模型 3: 过拟合 (Over-fitting / Full Model)
+                // ---------------------------------------------
+                // 使用所有变量 z, x1...xp (无惩罚)
+                // 注意：如果 p 接近或大于 N，此步可能不收敛或存在共线性
+                capture lasso poisson y z x* `train'
+                if _rc == 0 {
+                    qui predict fit_f `test', n
+                    qui g res_sq = (y - fit_f)^2 `test'
+                    su res_sq `test', meanonly
+                    qui replace mspe_full = r(mean) in `r'
+                    drop fit_f res_sq
+                }
+
+                // ---------------------------------------------
+                // E. 模型 4: Lasso CV
+                // ---------------------------------------------
+                capture lasso poisson y (z) x* `train', selection(cv)
+                if _rc == 0 {
+                    // 1. 记录预测误差
+                    qui predict fit_l `test', n
+                    qui g res_sq = (y - fit_l)^2 `test'
+                    su res_sq `test', meanonly
+                    qui replace mspe_lcv = r(mean) in `r'
+                    drop fit_l res_sq
+                    
+                    // 2. 记录变量选择情况
+                    // 记录非零系数个数 (减去常数项)
+                    qui replace num_vars = e(k_nonzero_sel) in `r'
+                    
+                    // 检查 x1 是否被选中
+                    local selected_vars `e(othervars_sel)'
+                    local match = 0
+                    foreach v in `selected_vars' {
+                        if "`v'" == "x1" {
+                            local match = 1
+                        }
+                    }
+                    qui replace sel_lcv_x1 = `match' in `r'
+                }
+                
+                // 清理生成的数据，准备下一轮
+                drop y x* z
+            } // End Loop r
+
+            // --- 3. 结果汇报 ---
+            di _dup(60) "-"
+            di "参数: N=`obs', Rho=`rho', f=`f', Total Vars(P)=`p'"
+            di "MSPE 比较 (越小越好):"
+            su mspe_under mspe_ideal mspe_full mspe_lcv
+            
+            di "Lasso CV 变量选择表现:"
+            di "  - x1 选中率 (Target: 1.0):"
+            su sel_lcv_x1
+            di "  - 平均选中变量数 (Target: 1, Ideal Model has 1 'x'):"
+            su num_vars
+            di _dup(60) "-"
+            
+            // 清理存储变量以便下一次外层循环使用
+            drop mspe_* sel_* num_vars
+
+        } // End Loop f
+    } // End Loop rho
+} // End Loop obs
+
+capture log close

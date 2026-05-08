@@ -1,0 +1,436 @@
+---------------------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  C:\Users\ZaihangZhang\OneDrive\MasterThesis\MachineLearninginAgriculturalTradeRe
+> search\code\Simulation\Sims_Overfitting_3.log
+  log type:  text
+ opened on:  20 Mar 2026, 14:20:20
+
+. 
+. * ==============================================================================
+. * 2. 参数设定
+. * ==============================================================================
+. * rep: 蒙特卡洛模拟次数
+. * od:  过度离散参数 (Over-dispersion)
+. * beta: 真实变量 x1 的系数
+. qui local rep = 1
+
+. qui local od  = 0.3 
+
+. qui local beta = 0.2   
+
+. 
+. * ==============================================================================
+. * 3. 主循环开始
+. * ==============================================================================
+. * obs: 样本量 (250, 1000, 4000)
+. foreach obs in /*25000 100000*/ 200000 { 
+  2.     
+.     * tph: 预测样本的截止点 (训练集 + 100个测试样本)
+.     qui local tph = 10000 + `obs'
+  3.     
+.     * rho: 变量间的相关系数
+.     foreach rho in 0.99 /*0.90*/ 0.75 { 
+  4.         
+.         * f: 具有相关性的变量数量块大小
+.         foreach f in 50 /*10*/ 200 { 
+  5.             
+.             * p: 总变量数量 (随着样本量增加而增加)
+.             qui local p = 5*ceil(sqrt(`obs'))
+  6.                         
+.             * 设置总观测值数量 (取 rep 和 tph 的较大值以确保空间足够)
+.             qui local smpl= max(`tph', `rep')
+  7.             qui set obs `smpl'
+  8. 
+.             * ==================================================================
+.             * 4. 初始化结果存储变量
+.             * ==================================================================
+.             
+.             * --- 变量选择准确性 (1=选中正确变量x1, 0=未选中或选错) ---
+.             qui g cv = .  if _n <= `rep'  // CV Lasso
+  9.             qui g ad = .  if _n <= `rep'  // Adaptive Lasso
+ 10.             qui g pi = .  if _n <= `rep'  // Plug-in Lasso
+ 11. 
+.             * --- 选中变量的个数 (Number of Selected Variables) ---
+.             qui g kcv = . if _n <= `rep'
+ 12.             qui g kad = . if _n <= `rep'
+ 13.             qui g kpi = . if _n <= `rep'
+ 14. 
+.             * --- 预测误差 MSE (Mean Squared Error) ---
+.             * m* 系列变量存储 Post-Lasso (选变量后重跑PPML) 的 MSE
+.             qui g mcv = .  if _n <= `rep'
+ 15.             qui g mad = .  if _n <= `rep'
+ 16.             qui g mpi = .  if _n <= `rep'
+ 17.             
+.             * l* 系列变量存储 Lasso 原始输出 (仅选了变量) 的 MSE
+.             qui g lcv = .  if _n <= `rep'
+ 18.             qui g lad = .  if _n <= `rep'
+ 19.             qui g lpi = .  if _n <= `rep'
+ 20. 
+.             qui g zero = . if _n <= `rep' // 记录是否所有变量都被剔除
+ 21. 
+.             * --- 基准模型 (Benchmarks) 的 MSE ---
+.             qui g mse_under = . if _n <= `rep' // 欠拟合 (Bias)
+ 22.             qui g mse_ideal = . if _n <= `rep' // 理想拟合 (Oracle)
+ 23.             qui g mse_full  = . if _n <= `rep' // 过拟合 (Full Model)
+ 24. 
+.             set seed 20260128
+ 25.             qui local f1 = `f' + 1
+ 26. 
+.             * ==================================================================
+.             * 5. 模拟迭代 (Replications)
+.             * ==================================================================
+.             forvalues r = 1/`rep' {     
+ 27.                 
+.                 * --- A. 数据生成过程 (DGP) ---
+.                 * 生成相关矩阵 V
+.                 mat v = J(`f', `f', `rho') + (1 - `rho') * I(`f')
+ 28. 
+.                 * 生成相关变量 x1-xf
+.                 drawnorm x1-x`f' , corr(v) cstorage(full) 
+ 29.                 * 生成独立变量 x(f+1)-xp
+.                 drawnorm x`f1'-x`p' 
+ 30.                 * 生成控制变量 z
+.                 qui g z = rnormal()
+ 31.                 
+.                 * 生成因变量 y
+.                 * 真实模型：y 取决于 x1, z 和随机误差。x2-xp 是噪音变量。
+.                 * 注意：预测集 (_n > obs) 的 y 也在这里生成，用于计算 MSE
+.                 qui g y = (exp(1 + `beta'*x1 + z + `od'*rnormal())) if _n <= `tph'
+ 32. 
+.                 * ==============================================================
+.                 * 6. 基准模型评估 (Benchmarks)
+.                 * ==============================================================
+. 
+.                 * --- (1) 欠拟合 (Under-fitting) ---
+.                 * 场景：遗漏重要变量 x1，只回归 z
+.                 capture poisson y z if _n <= `obs'
+ 33.                 if _rc == 0 {
+ 34.                     * 在测试集 (obs < n <= tph) 上预测
+.                     qui predict fit_u if _n <= `tph' & _n > `obs', n
+ 35.                     qui g res_u = (y - fit_u)^2
+ 36.                     su res_u, meanonly
+ 37.                     qui replace mse_under = r(mean) in `r'
+ 38.                     drop fit_u res_u
+ 39.                 }
+ 40. 
+.                 * --- (2) 理想拟合 (Ideal-fitting / Oracle) ---
+.                 * 场景：已知真实模型，只回归 x1 和 z
+.                 capture poisson y x1 z if _n <= `obs'
+ 41.                 if _rc == 0 {
+ 42.                     qui predict fit_i if _n <= `tph' & _n > `obs', n
+ 43.                     qui g res_i = (y - fit_i)^2
+ 44.                     su res_i, meanonly
+ 45.                     qui replace mse_ideal = r(mean) in `r'
+ 46.                     drop fit_i res_i
+ 47.                 }
+ 48. 
+.                 * --- (3) 过拟合 (Over-fitting / Full Model) ---
+.                 * 场景：不做筛选，回归所有 x 和 z。展示高维噪音带来的方差。
+.                 capture poisson y z x* if _n <= `obs'
+ 49.                 if _rc == 0 {
+ 50.                     qui predict fit_f if _n <= `tph' & _n > `obs', n
+ 51.                     qui g res_f = (y - fit_f)^2
+ 52.                     su res_f, meanonly
+ 53.                     qui replace mse_full = r(mean) in `r'
+ 54.                     drop fit_f res_f
+ 55.                 }
+ 56. 
+.                 * ==============================================================
+.                 * 7. Lasso 变体模型评估
+.                 * ==============================================================
+. 
+.                 * --------------------------------------------------------------
+.                 * 变体 1: CV Lasso (Cross-Validation)
+.                 * --------------------------------------------------------------
+.                 capture lasso poisson y (z) x* if _n <= `obs' // 默认 selection(cv)
+ 57.                 if _rc == 0 { 
+ 58.                     * 记录选中的变量个数
+.                     qui replace kcv = e(k_nonzero_sel) - 1 in `r'
+ 59.                     
+.                     * 记录是否正确选中 x1
+.                     * e(k_nonzero_sel)==1 意味着只选中了 z (因为 z 是必须包含的)，说明漏选
+> 了 x1
+.                     if e(k_nonzero_sel) == 1  qui replace cv = 0 in `r'
+ 60.                     else {
+ 61.                         local regs `e(othervars_sel)'
+ 62.                         gettoken regs1 : regs
+ 63.                         * 如果选中的第一个变量是 x1 (简单判断逻辑)，记为正确
+.                         if "`regs1'" == "x1" qui replace cv = 1 in `r'
+ 64.                         else  qui replace cv = 0 in `r'
+ 65.                     }
+ 66. 
+.                     * 计算 MSE (Linear Prediction converted to counts)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n 
+ 67.                     qui g res = (y - fit)^2
+ 68.                     su res, meanonly
+ 69.                     qui replace lcv = r(mean) in `r'
+ 70.                     drop fit res
+ 71.                     
+.                     * 计算 MSE (Post-Lasso: 用选中变量重跑 PPML)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n post 
+ 72.                     qui g res = (y - fit)^2
+ 73.                     su res, meanonly
+ 74.                     qui replace mcv = r(mean) in `r'
+ 75.                     drop fit res
+ 76.                 }
+ 77. 
+.                 * --------------------------------------------------------------
+.                 * 变体 2: Adaptive Lasso
+.                 * --------------------------------------------------------------
+.                 * 第一步：运行 Ridge 或 Lasso 得到权重；第二步：加权 Lasso
+.                 capture lasso poisson y (z) x* if _n <= `obs', selection(adaptive)
+ 78.                 if _rc == 0 { 
+ 79.                     qui replace kad = e(k_nonzero_sel) - 1 in `r'
+ 80.                     if e(k_nonzero_sel) == 1 qui replace ad = 0 in `r'
+ 81.                     else {
+ 82.                         local regsad `e(othervars_sel)'
+ 83.                         gettoken regs2 : regsad
+ 84.                         if "`regs2'" == "x1" qui replace ad = 1 in `r'
+ 85.                         else qui replace ad = 0 in `r'
+ 86.                     }
+ 87.                     
+.                     * MSE (Lasso Linear)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n 
+ 88.                     qui g res = (y - fit)^2 if _n <= `tph' & _n > `obs'
+ 89.                     su res if _n <= `tph' & _n > `obs', meanonly
+ 90.                     qui replace lad = r(mean) in `r'
+ 91.                     drop fit res
+ 92. 
+.                     * MSE (Post-Lasso)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n post
+ 93.                     qui g res = (y - fit)^2 if _n <= `tph' & _n > `obs'
+ 94.                     su res if _n <= `tph' & _n > `obs', meanonly
+ 95.                     qui replace mad = r(mean) in `r'
+ 96.                     drop fit res
+ 97.                 }
+ 98. 
+.                 * --------------------------------------------------------------
+.                 * 变体 3: Plug-in Lasso
+.                 * --------------------------------------------------------------
+.                 * 使用理论导出的惩罚项 lambda，通常比 CV 更快且选择变量更保守
+.                 capture lasso poisson y (z) x* if _n <= `obs', selection(plugin)
+ 99.                 if _rc == 0 {
+100.                     local regz `e(othervars_sel)'
+101.                     
+.                     * MSE (Lasso Linear)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n 
+102.                     qui g res = (y - fit)^2 if _n <= `tph' & _n > `obs'
+103.                     su res if _n <= `tph' & _n > `obs', meanonly
+104.                     qui replace lpi = r(mean) in `r'
+105.                     drop fit res
+106. 
+.                     * MSE (Post-Lasso)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n post 
+107.                     qui g res = (y - fit)^2 if _n <= `tph' & _n > `obs'
+108.                     su res if _n <= `tph' & _n > `obs', meanonly
+109.                     qui replace mpi = r(mean) in `r'
+110.                     drop fit res
+111. 
+.                     qui replace kpi = e(k_nonzero_sel) - 1 in `r'
+112.                     
+.                     * 检查变量选择准确性
+.                     if e(k_nonzero_sel) == 1  {
+113.                         * 没选中任何 x，只剩 z
+.                         qui replace pi = 0 in `r'
+114.                         qui replace zero = 1 in `r'
+115.                     }
+116.                     else {
+117.                         qui replace zero = 0 in `r'
+118.                         local regs `e(othervars_sel)'
+119.                         gettoken regs1 : regs
+120.                         if "`regs1'" == "x1" {
+121.                             qui replace pi = 1 in `r'
+122.                         }
+123.                         else {
+124.                             qui replace pi = 0 in `r'
+125.                         }
+126.                     }
+127.                 }
+128.                 
+.                 * 清理当次循环的数据，准备下一次 Monte Carlo
+.                 drop y x* z
+129.             } 
+130.             * End of Rep Loop
+. 
+.             * ==================================================================
+.             * 8. 结果汇报
+.             * ==================================================================
+.             di  "------------------------------------------------------------------"
+131.             di  "Parameters: P = " `p' ", N = " `obs' ", Rho = " `rho' ", f = " `f'
+132.                         
+.                         di
+133.             di  "SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)"
+134.             di  "Under (Bias) | Ideal (Oracle) | Full (Variance)"
+135.             su mse_under mse_ideal mse_full
+136.             
+.             di
+137.             di  "SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)"
+138.             di  "CV Lasso | Adaptive | Plug-in"
+139.             su cv ad pi if _n <= `rep'
+140. 
+.             di 
+141.             di  "SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED"
+142.             su kcv kad kpi if _n <= `rep'
+143.             
+.             di
+144.             di  "SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)"
+145.             su mcv mad mpi if _n <= `rep'
+146.             
+.             di "------------------------------------------------------------------"
+147.             
+.             * 清理结果变量，准备下一次参数组合
+.             drop cv* ad* pi* kcv kad kpi* mcv mad mpi* lcv lad lpi* zero mse_under mse_idea
+> l mse_full
+148.         }
+149.     }
+150. }
+------------------------------------------------------------------
+Parameters: P = 2240, N = 200000, Rho = .99, f = 50
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |          1     8.26089           .    8.26089    8.26089
+   mse_ideal |          1     5.90843           .    5.90843    5.90843
+    mse_full |          1     6.07998           .    6.07998    6.07998
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |          1           1           .          1          1
+          ad |          1           1           .          1          1
+          pi |          1           1           .          1          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |          1           4           .          4          4
+         kad |          1           1           .          1          1
+         kpi |          1           4           .          4          4
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |          1    5.907642           .   5.907642   5.907642
+         mad |          1     5.90843           .    5.90843    5.90843
+         mpi |          1    5.907642           .   5.907642   5.907642
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 2240, N = 200000, Rho = .99, f = 200
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |          1     8.26089           .    8.26089    8.26089
+   mse_ideal |          1     5.90843           .    5.90843    5.90843
+    mse_full |          1     6.07998           .    6.07998    6.07998
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |          1           1           .          1          1
+          ad |          1           1           .          1          1
+          pi |          1           1           .          1          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |          1           4           .          4          4
+         kad |          1           1           .          1          1
+         kpi |          1           5           .          5          5
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |          1    5.909692           .   5.909692   5.909692
+         mad |          1     5.90843           .    5.90843    5.90843
+         mpi |          1    5.909458           .   5.909458   5.909458
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 2240, N = 200000, Rho = .75, f = 50
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |          1     8.26089           .    8.26089    8.26089
+   mse_ideal |          1     5.90843           .    5.90843    5.90843
+    mse_full |          1     6.07998           .    6.07998    6.07998
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |          1           1           .          1          1
+          ad |          1           1           .          1          1
+          pi |          1           1           .          1          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |          1           1           .          1          1
+         kad |          1           1           .          1          1
+         kpi |          1           1           .          1          1
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |          1     5.90843           .    5.90843    5.90843
+         mad |          1     5.90843           .    5.90843    5.90843
+         mpi |          1     5.90843           .    5.90843    5.90843
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 2240, N = 200000, Rho = .75, f = 200
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |          1     8.26089           .    8.26089    8.26089
+   mse_ideal |          1     5.90843           .    5.90843    5.90843
+    mse_full |          1     6.07998           .    6.07998    6.07998
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |          1           1           .          1          1
+          ad |          1           1           .          1          1
+          pi |          1           1           .          1          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |          1           1           .          1          1
+         kad |          1           1           .          1          1
+         kpi |          1           1           .          1          1
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |          1     5.90843           .    5.90843    5.90843
+         mad |          1     5.90843           .    5.90843    5.90843
+         mpi |          1     5.90843           .    5.90843    5.90843
+------------------------------------------------------------------
+
+. capture log close

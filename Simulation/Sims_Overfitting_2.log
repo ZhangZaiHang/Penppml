@@ -1,0 +1,1287 @@
+---------------------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  C:\Users\ZaihangZhang\OneDrive\MasterThesis\MachineLearninginAgriculturalTradeRe
+> search\code\Simulation\Sims_Overfitting_2.log
+  log type:  text
+ opened on:   2 Feb 2026, 14:39:28
+
+. 
+. * ==============================================================================
+. * 2. 参数设定
+. * ==============================================================================
+. * rep: 蒙特卡洛模拟次数
+. * od:  过度离散参数 (Over-dispersion)
+. * beta: 真实变量 x1 的系数
+. qui local rep = 1000
+
+. qui local od  = 0.3 
+
+. qui local beta = 0.2   
+
+. 
+. * ==============================================================================
+. * 3. 主循环开始
+. * ==============================================================================
+. * obs: 样本量 (250, 1000, 4000)
+. foreach obs in 250 1000 4000 { 
+  2.     
+.     * tph: 预测样本的截止点 (训练集 + 100个测试样本)
+.     qui local tph = 100 + `obs'
+  3.     
+.     * rho: 变量间的相关系数
+.     foreach rho in 0.99 0.90 0.75 { 
+  4.         
+.         * f: 具有相关性的变量数量块大小
+.         foreach f in 5 10 20 { 
+  5.             
+.             * p: 总变量数量 (随着样本量增加而增加)
+.             qui local p = 5*ceil(sqrt(`obs'))
+  6.             
+.             * 设置总观测值数量 (取 rep 和 tph 的较大值以确保空间足够)
+.             qui local smpl= max(`tph', `rep')
+  7.             qui set obs `smpl'
+  8. 
+.             * ==================================================================
+.             * 4. 初始化结果存储变量
+.             * ==================================================================
+.             
+.             * --- 变量选择准确性 (1=选中正确变量x1, 0=未选中或选错) ---
+.             qui g cv = .  if _n <= `rep'  // CV Lasso
+  9.             qui g ad = .  if _n <= `rep'  // Adaptive Lasso
+ 10.             qui g pi = .  if _n <= `rep'  // Plug-in Lasso
+ 11. 
+.             * --- 选中变量的个数 (Number of Selected Variables) ---
+.             qui g kcv = . if _n <= `rep'
+ 12.             qui g kad = . if _n <= `rep'
+ 13.             qui g kpi = . if _n <= `rep'
+ 14. 
+.             * --- 预测误差 MSE (Mean Squared Error) ---
+.             * m* 系列变量存储 Post-Lasso (选变量后重跑PPML) 的 MSE
+.             qui g mcv = .  if _n <= `rep'
+ 15.             qui g mad = .  if _n <= `rep'
+ 16.             qui g mpi = .  if _n <= `rep'
+ 17.             
+.             * l* 系列变量存储 Lasso 原始输出 (仅选了变量) 的 MSE
+.             qui g lcv = .  if _n <= `rep'
+ 18.             qui g lad = .  if _n <= `rep'
+ 19.             qui g lpi = .  if _n <= `rep'
+ 20. 
+.             qui g zero = . if _n <= `rep' // 记录是否所有变量都被剔除
+ 21. 
+.             * --- 基准模型 (Benchmarks) 的 MSE ---
+.             qui g mse_under = . if _n <= `rep' // 欠拟合 (Bias)
+ 22.             qui g mse_ideal = . if _n <= `rep' // 理想拟合 (Oracle)
+ 23.             qui g mse_full  = . if _n <= `rep' // 过拟合 (Full Model)
+ 24. 
+.             set seed 20260128
+ 25.             qui local f1 = `f' + 1
+ 26. 
+.             * ==================================================================
+.             * 5. 模拟迭代 (Replications)
+.             * ==================================================================
+.             forvalues r = 1/`rep' {     
+ 27.                 
+.                 * --- A. 数据生成过程 (DGP) ---
+.                 * 生成相关矩阵 V
+.                 mat v = J(`f', `f', `rho') + (1 - `rho') * I(`f')
+ 28. 
+.                 * 生成相关变量 x1-xf
+.                 drawnorm x1-x`f' , corr(v) cstorage(full) 
+ 29.                 * 生成独立变量 x(f+1)-xp
+.                 drawnorm x`f1'-x`p' 
+ 30.                 * 生成控制变量 z
+.                 qui g z = rnormal()
+ 31.                 
+.                 * 生成因变量 y
+.                 * 真实模型：y 取决于 x1, z 和随机误差。x2-xp 是噪音变量。
+.                 * 注意：预测集 (_n > obs) 的 y 也在这里生成，用于计算 MSE
+.                 qui g y = (exp(1 + `beta'*x1 + z + `od'*rnormal())) if _n <= `tph'
+ 32. 
+.                 * ==============================================================
+.                 * 6. 基准模型评估 (Benchmarks)
+.                 * ==============================================================
+. 
+.                 * --- (1) 欠拟合 (Under-fitting) ---
+.                 * 场景：遗漏重要变量 x1，只回归 z
+.                 capture poisson y z if _n <= `obs'
+ 33.                 if _rc == 0 {
+ 34.                     * 在测试集 (obs < n <= tph) 上预测
+.                     qui predict fit_u if _n <= `tph' & _n > `obs', n
+ 35.                     qui g res_u = (y - fit_u)^2
+ 36.                     su res_u, meanonly
+ 37.                     qui replace mse_under = r(mean) in `r'
+ 38.                     drop fit_u res_u
+ 39.                 }
+ 40. 
+.                 * --- (2) 理想拟合 (Ideal-fitting / Oracle) ---
+.                 * 场景：已知真实模型，只回归 x1 和 z
+.                 capture poisson y x1 z if _n <= `obs'
+ 41.                 if _rc == 0 {
+ 42.                     qui predict fit_i if _n <= `tph' & _n > `obs', n
+ 43.                     qui g res_i = (y - fit_i)^2
+ 44.                     su res_i, meanonly
+ 45.                     qui replace mse_ideal = r(mean) in `r'
+ 46.                     drop fit_i res_i
+ 47.                 }
+ 48. 
+.                 * --- (3) 过拟合 (Over-fitting / Full Model) ---
+.                 * 场景：不做筛选，回归所有 x 和 z。展示高维噪音带来的方差。
+.                 capture poisson y z x* if _n <= `obs'
+ 49.                 if _rc == 0 {
+ 50.                     qui predict fit_f if _n <= `tph' & _n > `obs', n
+ 51.                     qui g res_f = (y - fit_f)^2
+ 52.                     su res_f, meanonly
+ 53.                     qui replace mse_full = r(mean) in `r'
+ 54.                     drop fit_f res_f
+ 55.                 }
+ 56. 
+.                 * ==============================================================
+.                 * 7. Lasso 变体模型评估
+.                 * ==============================================================
+. 
+.                 * --------------------------------------------------------------
+.                 * 变体 1: CV Lasso (Cross-Validation)
+.                 * --------------------------------------------------------------
+.                 capture lasso poisson y (z) x* if _n <= `obs' // 默认 selection(cv)
+ 57.                 if _rc == 0 { 
+ 58.                     * 记录选中的变量个数
+.                     qui replace kcv = e(k_nonzero_sel) - 1 in `r'
+ 59.                     
+.                     * 记录是否正确选中 x1
+.                     * e(k_nonzero_sel)==1 意味着只选中了 z (因为 z 是必须包含的)，说明漏选
+> 了 x1
+.                     if e(k_nonzero_sel) == 1  qui replace cv = 0 in `r'
+ 60.                     else {
+ 61.                         local regs `e(othervars_sel)'
+ 62.                         gettoken regs1 : regs
+ 63.                         * 如果选中的第一个变量是 x1 (简单判断逻辑)，记为正确
+.                         if "`regs1'" == "x1" qui replace cv = 1 in `r'
+ 64.                         else  qui replace cv = 0 in `r'
+ 65.                     }
+ 66. 
+.                     * 计算 MSE (Linear Prediction converted to counts)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n 
+ 67.                     qui g res = (y - fit)^2
+ 68.                     su res, meanonly
+ 69.                     qui replace lcv = r(mean) in `r'
+ 70.                     drop fit res
+ 71.                     
+.                     * 计算 MSE (Post-Lasso: 用选中变量重跑 PPML)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n post 
+ 72.                     qui g res = (y - fit)^2
+ 73.                     su res, meanonly
+ 74.                     qui replace mcv = r(mean) in `r'
+ 75.                     drop fit res
+ 76.                 }
+ 77. 
+.                 * --------------------------------------------------------------
+.                 * 变体 2: Adaptive Lasso
+.                 * --------------------------------------------------------------
+.                 * 第一步：运行 Ridge 或 Lasso 得到权重；第二步：加权 Lasso
+.                 capture lasso poisson y (z) x* if _n <= `obs', selection(adaptive)
+ 78.                 if _rc == 0 { 
+ 79.                     qui replace kad = e(k_nonzero_sel) - 1 in `r'
+ 80.                     if e(k_nonzero_sel) == 1 qui replace ad = 0 in `r'
+ 81.                     else {
+ 82.                         local regsad `e(othervars_sel)'
+ 83.                         gettoken regs2 : regsad
+ 84.                         if "`regs2'" == "x1" qui replace ad = 1 in `r'
+ 85.                         else qui replace ad = 0 in `r'
+ 86.                     }
+ 87.                     
+.                     * MSE (Lasso Linear)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n 
+ 88.                     qui g res = (y - fit)^2 if _n <= `tph' & _n > `obs'
+ 89.                     su res if _n <= `tph' & _n > `obs', meanonly
+ 90.                     qui replace lad = r(mean) in `r'
+ 91.                     drop fit res
+ 92. 
+.                     * MSE (Post-Lasso)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n post
+ 93.                     qui g res = (y - fit)^2 if _n <= `tph' & _n > `obs'
+ 94.                     su res if _n <= `tph' & _n > `obs', meanonly
+ 95.                     qui replace mad = r(mean) in `r'
+ 96.                     drop fit res
+ 97.                 }
+ 98. 
+.                 * --------------------------------------------------------------
+.                 * 变体 3: Plug-in Lasso
+.                 * --------------------------------------------------------------
+.                 * 使用理论导出的惩罚项 lambda，通常比 CV 更快且选择变量更保守
+.                 capture lasso poisson y (z) x* if _n <= `obs', selection(plugin)
+ 99.                 if _rc == 0 {
+100.                     local regz `e(othervars_sel)'
+101.                     
+.                     * MSE (Lasso Linear)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n 
+102.                     qui g res = (y - fit)^2 if _n <= `tph' & _n > `obs'
+103.                     su res if _n <= `tph' & _n > `obs', meanonly
+104.                     qui replace lpi = r(mean) in `r'
+105.                     drop fit res
+106. 
+.                     * MSE (Post-Lasso)
+.                     qui predict fit if _n <= `tph' & _n > `obs', n post 
+107.                     qui g res = (y - fit)^2 if _n <= `tph' & _n > `obs'
+108.                     su res if _n <= `tph' & _n > `obs', meanonly
+109.                     qui replace mpi = r(mean) in `r'
+110.                     drop fit res
+111. 
+.                     qui replace kpi = e(k_nonzero_sel) - 1 in `r'
+112.                     
+.                     * 检查变量选择准确性
+.                     if e(k_nonzero_sel) == 1  {
+113.                         * 没选中任何 x，只剩 z
+.                         qui replace pi = 0 in `r'
+114.                         qui replace zero = 1 in `r'
+115.                     }
+116.                     else {
+117.                         qui replace zero = 0 in `r'
+118.                         local regs `e(othervars_sel)'
+119.                         gettoken regs1 : regs
+120.                         if "`regs1'" == "x1" {
+121.                             qui replace pi = 1 in `r'
+122.                         }
+123.                         else {
+124.                             qui replace pi = 0 in `r'
+125.                         }
+126.                     }
+127.                 }
+128.                 
+.                 * 清理当次循环的数据，准备下一次 Monte Carlo
+.                 drop y x* z
+129.             } 
+130.             * End of Rep Loop
+. 
+.             * ==================================================================
+.             * 8. 结果汇报
+.             * ==================================================================
+.             di  "------------------------------------------------------------------"
+131.             di  "Parameters: P = " `p' ", N = " `obs' ", Rho = " `rho' ", f = " `f'
+132.                         
+.                         di
+133.             di  "SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)"
+134.             di  "Under (Bias) | Ideal (Oracle) | Full (Variance)"
+135.             su mse_under mse_ideal mse_full
+136.             
+.             di
+137.             di  "SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)"
+138.             di  "CV Lasso | Adaptive | Plug-in"
+139.             su cv ad pi if _n <= `rep'
+140. 
+.             di 
+141.             di  "SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED"
+142.             su kcv kad kpi if _n <= `rep'
+143.             
+.             di
+144.             di  "SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)"
+145.             su mcv mad mpi if _n <= `rep'
+146.             
+.             di "------------------------------------------------------------------"
+147.             
+.             * 清理结果变量，准备下一次参数组合
+.             drop cv* ad* pi* kcv kad kpi* mcv mad mpi* lcv lad lpi* zero mse_under mse_idea
+> l mse_full
+148.         }
+149.     }
+150. }
+------------------------------------------------------------------
+Parameters: P = 80, N = 250, Rho = .99, f = 5
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.958633    14.80489   1.140434   286.9973
+   mse_ideal |      1,000    6.349804    9.394895   .7917569   185.1595
+    mse_full |      1,000    10.47425    10.86557   1.874463   183.1236
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .542    .4984822          0          1
+          ad |      1,000        .472    .4994652          0          1
+          pi |        998    .4088176     .491862          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000       9.006    8.524355          1         78
+         kad |      1,000       7.449    7.340796          1         59
+         kpi |        998    1.244489    .5790948          0          4
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    7.354812    10.23915   1.031025   194.6546
+         mad |      1,000    7.085044     9.82076   .9351518   185.1595
+         mpi |        998    6.460616    9.548412    .811312   181.1544
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 80, N = 250, Rho = .99, f = 10
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.958633    14.80489   1.140434   286.9973
+   mse_ideal |      1,000    6.349804    9.394895   .7917569   185.1595
+    mse_full |      1,000    10.47425    10.86557   1.874463   183.1236
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .404     .490943          0          1
+          ad |      1,000         .32    .4667096          0          1
+          pi |        998    .2635271    .4407666          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000       9.029    8.290289          1         74
+         kad |      1,000       7.359    7.275235          1         54
+         kpi |        998    1.320641    .6423649          0          4
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    7.302223    10.33898   1.030525    190.959
+         mad |      1,000    7.073773    9.509521   .7917569   186.8216
+         mpi |        998    6.493788    10.01696   .8428216   181.1544
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 80, N = 250, Rho = .99, f = 20
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.958633    14.80489   1.140434   286.9973
+   mse_ideal |      1,000    6.349804    9.394895   .7917569   185.1595
+    mse_full |      1,000    10.47425    10.86557   1.874463   183.1236
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .264    .4410198          0          1
+          ad |      1,000        .208    .4060799          0          1
+          pi |        999    .1731732    .3785864          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000       8.397    7.482739          1         55
+         kad |      1,000       6.742    6.521347          1         49
+         kpi |        999    1.452452     .736598          0          5
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    7.239796    10.23659   1.038714   189.8604
+         mad |      1,000    7.074003    9.509063    .997958   189.8604
+         mpi |        999    6.474628    9.748016   .8095667   168.7063
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 80, N = 250, Rho = .9, f = 5
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.958633    14.80489   1.140434   286.9973
+   mse_ideal |      1,000    6.349804    9.394895   .7917569   185.1595
+    mse_full |      1,000    10.47425    10.86557   1.874463   183.1236
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .971    .1678904          0          1
+          ad |      1,000        .943    .2319586          0          1
+          pi |        999    .8348348    .3715155          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000       9.546    8.659034          1         74
+         kad |      1,000       7.915    7.380939          1         58
+         kpi |        999    1.495495    .7700101          0          5
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    7.346106    10.21353   1.032847   194.6546
+         mad |      1,000    7.130304    9.713687   .7917569   185.1595
+         mpi |        999    6.455142    9.368249   .7916835   185.1595
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 80, N = 250, Rho = .9, f = 10
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.958633    14.80489   1.140434   286.9973
+   mse_ideal |      1,000    6.349804    9.394895   .7917569   185.1595
+    mse_full |      1,000    10.47425    10.86557   1.874463   183.1236
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .937    .2430845          0          1
+          ad |      1,000        .889    .3142893          0          1
+          pi |        998     .755511    .4299993          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000       9.629    8.382579          1         71
+         kad |      1,000       7.976     7.42041          1         60
+         kpi |        998    1.786573     .970756          0          6
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    7.341604    10.21805   1.032847   178.9881
+         mad |      1,000    7.145012    9.569701   .7917569   185.1595
+         mpi |        998    6.535836    10.09225   .8135786   185.1595
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 80, N = 250, Rho = .9, f = 20
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.958633    14.80489   1.140434   286.9973
+   mse_ideal |      1,000    6.349804    9.394895   .7917569   185.1595
+    mse_full |      1,000    10.47425    10.86557   1.874463   183.1236
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .887    .3167512          0          1
+          ad |      1,000         .81    .3924972          0          1
+          pi |      1,000        .651    .4768925          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000       9.457    7.795827          1         64
+         kad |      1,000       7.374    6.630391          1         64
+         kpi |      1,000       2.094    1.111935          0          6
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    7.301482    9.957661   1.074054    172.899
+         mad |      1,000    7.157184    9.314948    .997958    176.309
+         mpi |      1,000    6.569467    9.725923   .9448049   155.8996
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 80, N = 250, Rho = .75, f = 5
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.958633    14.80489   1.140434   286.9973
+   mse_ideal |      1,000    6.349804    9.394895   .7917569   185.1595
+    mse_full |      1,000    10.47425    10.86557   1.874463   183.1236
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .999    .0316228          0          1
+          ad |      1,000        .997    .0547174          0          1
+          pi |        999    .9319319    .2519888          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000       9.299    8.614047          1         73
+         kad |      1,000       7.888    7.353607          1         56
+         kpi |        999    1.309309    .6650624          0          5
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    7.328762    10.24965   1.032847   194.6546
+         mad |      1,000    7.141103    9.674368   .9351518   185.1595
+         mpi |        999    6.425775    9.356904   .7923252   185.1595
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 80, N = 250, Rho = .75, f = 10
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.958633    14.80489   1.140434   286.9973
+   mse_ideal |      1,000    6.349804    9.394895   .7917569   185.1595
+    mse_full |      1,000    10.47425    10.86557   1.874463   183.1236
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .995     .070569          0          1
+          ad |      1,000        .992    .0891288          0          1
+          pi |        999    .9089089    .2878827          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000       9.379       8.577          1         74
+         kad |      1,000       7.923    7.478168          1         56
+         kpi |        999    1.565566    .8916533          0          5
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    7.393864     10.6933   1.026813   194.6546
+         mad |      1,000    7.073271    9.510388   .7917569   185.1595
+         mpi |        999    6.515018     9.86564   .8159857   185.1595
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 80, N = 250, Rho = .75, f = 20
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.958633    14.80489   1.140434   286.9973
+   mse_ideal |      1,000    6.349804    9.394895   .7917569   185.1595
+    mse_full |      1,000    10.47425    10.86557   1.874463   183.1236
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .995     .070569          0          1
+          ad |      1,000        .986    .1175492          0          1
+          pi |      1,000         .89    .3130463          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000       9.429     8.21477          1         74
+         kad |      1,000       7.565    7.051773          1         63
+         kpi |      1,000       1.939    1.166465          0          8
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    7.307316    9.885023   1.166343   175.2645
+         mad |      1,000    7.134285    9.401294    .997958   175.2645
+         mpi |      1,000    6.544024    9.863177   .8383474   185.1595
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 160, N = 1000, Rho = .99, f = 5
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.903152    10.81285   1.537926    155.542
+   mse_ideal |      1,000    6.015353    6.308134   .9495531   79.32097
+    mse_full |      1,000    8.259143    10.37908   1.598884    197.604
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .827    .3784365          0          1
+          ad |      1,000        .685    .4647483          0          1
+          pi |        999    .7097097    .4541236          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.571    10.64454          1         86
+         kad |      1,000       5.813    9.751057          1         68
+         kpi |        999    1.700701    .7338847          1          4
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.468449    6.836063   .9771393   82.22251
+         mad |      1,000    6.327666    7.041941   1.019638   95.43116
+         mpi |        999    6.058223    6.521255   .9495531   86.57483
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 160, N = 1000, Rho = .99, f = 10
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.903152    10.81285   1.537926    155.542
+   mse_ideal |      1,000    6.015353    6.308134   .9495531   79.32097
+    mse_full |      1,000    8.259143    10.37908   1.598884    197.604
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .693    .4614802          0          1
+          ad |      1,000        .539    .4987261          0          1
+          pi |        999    .5735736     .494805          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.732    10.44563          1         81
+         kad |      1,000       6.397    9.879727          1         63
+         kpi |        999    1.993994    .8726322          1          5
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.496388    6.896021    .947094   85.31422
+         mad |      1,000    6.309852    6.755889   .9605735   79.32097
+         mpi |        999    6.064668    6.463502   .9495531   87.21472
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 160, N = 1000, Rho = .99, f = 20
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.903152    10.81285   1.537926    155.542
+   mse_ideal |      1,000    6.015353    6.308134   .9495531   79.32097
+    mse_full |      1,000    8.259143    10.37908   1.598884    197.604
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .552    .4975375          0          1
+          ad |      1,000          .4    .4901431          0          1
+          pi |        999    .4314314    .4955241          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.588    10.07391          1         99
+         kad |      1,000       6.442    9.278185          1         62
+         kpi |        999    2.292292    1.022125          1          7
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.446047     6.79423   .9447717   85.49734
+         mad |      1,000    6.310405    6.613348   .9605176   74.63245
+         mpi |        999    6.066073    6.450861   .9479744   87.21472
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 160, N = 1000, Rho = .9, f = 5
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.903152    10.81285   1.537926    155.542
+   mse_ideal |      1,000    6.015353    6.308134   .9495531   79.32097
+    mse_full |      1,000    8.259143    10.37908   1.598884    197.604
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000           1           0          1          1
+          pi |        999     .992993    .0834559          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.405    10.69005          1         87
+         kad |      1,000       4.862    9.243831          1         68
+         kpi |        999    1.640641     .794514          1          5
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.460335    6.855986   .9785071   82.39304
+         mad |      1,000    6.247859    6.623077   .9307606   79.32097
+         mpi |        999    6.047559    6.379907   .9495531   79.32097
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 160, N = 1000, Rho = .9, f = 10
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.903152    10.81285   1.537926    155.542
+   mse_ideal |      1,000    6.015353    6.308134   .9495531   79.32097
+    mse_full |      1,000    8.259143    10.37908   1.598884    197.604
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000        .998     .044699          0          1
+          pi |        999     .987988    .1089936          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.796     10.6207          1         83
+         kad |      1,000       5.562    9.857044          1         63
+         kpi |        999    2.034034     1.04164          1          8
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.496161    6.873522   1.038226   81.46419
+         mad |      1,000    6.267382    6.610359   .9328419   79.32097
+         mpi |        999    6.062213    6.369359   .9495531   79.06453
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 160, N = 1000, Rho = .9, f = 20
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.903152    10.81285   1.537926    155.542
+   mse_ideal |      1,000    6.015353    6.308134   .9495531   79.32097
+    mse_full |      1,000    8.259143    10.37908   1.598884    197.604
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000        .996    .0631505          0          1
+          pi |        999     .978979    .1435262          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      11.024    10.23583          1         99
+         kad |      1,000       6.006    9.509384          1         63
+         kpi |        999    2.567568    1.356048          1          9
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000     6.47162    6.815611   .9971176   81.46419
+         mad |      1,000    6.251577    6.562799   .9437723   79.32097
+         mpi |        999    6.050162    6.318825   .9482809   79.06453
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 160, N = 1000, Rho = .75, f = 5
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.903152    10.81285   1.537926    155.542
+   mse_ideal |      1,000    6.015353    6.308134   .9495531   79.32097
+    mse_full |      1,000    8.259143    10.37908   1.598884    197.604
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000           1           0          1          1
+          pi |        999           1           0          1          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.053    10.62201          1         90
+         kad |      1,000       4.266    8.821511          1         69
+         kpi |        999    1.283283    .5652166          1          5
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.448856    6.818587   .9836519   80.65301
+         mad |      1,000    6.191684    6.492211   .9309226   79.32097
+         mpi |        999    6.035455    6.359363   .9495531   79.32097
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 160, N = 1000, Rho = .75, f = 10
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.903152    10.81285   1.537926    155.542
+   mse_ideal |      1,000    6.015353    6.308134   .9495531   79.32097
+    mse_full |      1,000    8.259143    10.37908   1.598884    197.604
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000           1           0          1          1
+          pi |        999           1           0          1          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.417    10.72633          1         89
+         kad |      1,000        4.59    9.119049          1         66
+         kpi |        999    1.538539    .8400462          1          7
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.498705    6.912752   1.031684   81.73635
+         mad |      1,000    6.216722    6.513067   .9326514   79.32097
+         mpi |        999    6.048049    6.376064   .9495531   79.32097
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 160, N = 1000, Rho = .75, f = 20
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000    8.903152    10.81285   1.537926    155.542
+   mse_ideal |      1,000    6.015353    6.308134   .9495531   79.32097
+    mse_full |      1,000    8.259143    10.37908   1.598884    197.604
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000           1           0          1          1
+          pi |        999     .998999    .0316386          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.361    10.04587          1         94
+         kad |      1,000       4.739    8.920003          1         64
+         kpi |        999    1.890891    1.125006          1          7
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.466834     6.89057   .9990002   81.73635
+         mad |      1,000    6.188667     6.47452   .9361243   79.32097
+         mpi |        999    6.051324     6.33104   .9495531   79.32097
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 320, N = 4000, Rho = .99, f = 5
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000     8.83501    14.57739   1.117974   405.6228
+   mse_ideal |      1,000    6.250471    10.36267   .7601922   285.5262
+    mse_full |      1,000    7.405511    11.84063   .7249341   326.0134
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .994    .0772656          0          1
+          ad |      1,000        .922    .2683058          0          1
+          pi |      1,000        .976    .1531256          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.617    10.49898          1         74
+         kad |      1,000       1.235     1.95796          1         40
+         kpi |      1,000       2.051    .8804398          1          5
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.492308    10.50589   .7827423   284.2126
+         mad |      1,000    6.268959    10.37021   .7601922   285.5262
+         mpi |      1,000    6.260023    10.31173   .7601434   282.9519
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 320, N = 4000, Rho = .99, f = 10
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000     8.83501    14.57739   1.117974   405.6228
+   mse_ideal |      1,000    6.250471    10.36267   .7601922   285.5262
+    mse_full |      1,000    7.405511    11.84063   .7249341   326.0134
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .984    .1255379          0          1
+          ad |      1,000        .852    .3552777          0          1
+          pi |      1,000        .949    .2201078          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      11.259    10.44859          1         72
+         kad |      1,000       1.471    2.825445          1         39
+         kpi |      1,000       2.628    1.111238          1          6
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.512249    10.69197   .7857729   289.7937
+         mad |      1,000    6.274582    10.36969   .7601922   285.5262
+         mpi |      1,000     6.26815    10.49235   .7601434   289.6364
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 320, N = 4000, Rho = .99, f = 20
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000     8.83501    14.57739   1.117974   405.6228
+   mse_ideal |      1,000    6.250471    10.36267   .7601922   285.5262
+    mse_full |      1,000    7.405511    11.84063   .7249341   326.0134
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000        .952    .2138732          0          1
+          ad |      1,000        .769    .4216833          0          1
+          pi |      1,000        .891    .3117952          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      11.831     10.4208          1         80
+         kad |      1,000       1.613    3.452412          1         47
+         kpi |      1,000       3.216    1.332336          1          8
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.494043    9.971005    .777825   261.5176
+         mad |      1,000    6.279744    10.37101   .7601922   285.5262
+         mpi |      1,000    6.274978    10.54962   .7414061   291.1441
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 320, N = 4000, Rho = .9, f = 5
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000     8.83501    14.57739   1.117974   405.6228
+   mse_ideal |      1,000    6.250471    10.36267   .7601922   285.5262
+    mse_full |      1,000    7.405511    11.84063   .7249341   326.0134
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000           1           0          1          1
+          pi |      1,000           1           0          1          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.108    10.42838          1         74
+         kad |      1,000       1.002     .044699          1          2
+         kpi |      1,000       1.544     .737976          1          5
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.486575    10.50931   .7827423   284.2126
+         mad |      1,000    6.250377    10.36268   .7601922   285.5262
+         mpi |      1,000    6.257326    10.31173   .7601922   282.9519
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 320, N = 4000, Rho = .9, f = 10
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000     8.83501    14.57739   1.117974   405.6228
+   mse_ideal |      1,000    6.250471    10.36267   .7601922   285.5262
+    mse_full |      1,000    7.405511    11.84063   .7249341   326.0134
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000           1           0          1          1
+          pi |      1,000        .999    .0316228          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.537    10.43242          1         72
+         kad |      1,000        1.01    .2568384          1          9
+         kpi |      1,000       1.918    .9941148          1          6
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000     6.49599    10.69378   .7827423   290.3076
+         mad |      1,000    6.249478    10.36281   .7601922   285.5262
+         mpi |      1,000    6.260998    10.31383   .7601922   282.9519
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 320, N = 4000, Rho = .9, f = 20
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000     8.83501    14.57739   1.117974   405.6228
+   mse_ideal |      1,000    6.250471    10.36267   .7601922   285.5262
+    mse_full |      1,000    7.405511    11.84063   .7249341   326.0134
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000           1           0          1          1
+          pi |      1,000        .999    .0316228          0          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.893    10.38814          1         80
+         kad |      1,000       1.012    .3193086          1         11
+         kpi |      1,000       2.399    1.271777          1          7
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.484483    9.991763   .7771632   262.1811
+         mad |      1,000    6.249585    10.36279   .7601922   285.5262
+         mpi |      1,000    6.266362    10.44971   .7601922   287.8321
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 320, N = 4000, Rho = .75, f = 5
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000     8.83501    14.57739   1.117974   405.6228
+   mse_ideal |      1,000    6.250471    10.36267   .7601922   285.5262
+    mse_full |      1,000    7.405511    11.84063   .7249341   326.0134
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000           1           0          1          1
+          pi |      1,000           1           0          1          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000       9.891     10.4092          1         74
+         kad |      1,000           1           0          1          1
+         kpi |      1,000       1.206    .4896977          1          4
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.483677    10.49791   .7827423   284.2126
+         mad |      1,000    6.250471    10.36267   .7601922   285.5262
+         mpi |      1,000    6.255639    10.37154   .7601922   285.5262
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 320, N = 4000, Rho = .75, f = 10
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000     8.83501    14.57739   1.117974   405.6228
+   mse_ideal |      1,000    6.250471    10.36267   .7601922   285.5262
+    mse_full |      1,000    7.405511    11.84063   .7249341   326.0134
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000           1           0          1          1
+          pi |      1,000           1           0          1          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.044    10.32844          1         72
+         kad |      1,000           1           0          1          1
+         kpi |      1,000       1.395    .6967499          1          5
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.503015    10.78772   .7827423   293.8537
+         mad |      1,000    6.250471    10.36267   .7601922   285.5262
+         mpi |      1,000    6.254892      10.373   .7601922   285.5262
+------------------------------------------------------------------
+------------------------------------------------------------------
+Parameters: P = 320, N = 4000, Rho = .75, f = 20
+
+SECTION 1: BENCHMARKS PREDICTION ERROR (MSE)
+Under (Bias) | Ideal (Oracle) | Full (Variance)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+   mse_under |      1,000     8.83501    14.57739   1.117974   405.6228
+   mse_ideal |      1,000    6.250471    10.36267   .7601922   285.5262
+    mse_full |      1,000    7.405511    11.84063   .7249341   326.0134
+
+SECTION 2: LASSO VARIANTS - SELECTION ACCURACY (Correctly picked x1?)
+CV Lasso | Adaptive | Plug-in
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+          cv |      1,000           1           0          1          1
+          ad |      1,000           1           0          1          1
+          pi |      1,000           1           0          1          1
+
+SECTION 3: LASSO VARIANTS - NUMBER OF VARS SELECTED
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         kcv |      1,000      10.298    10.34815          1         71
+         kad |      1,000           1           0          1          1
+         kpi |      1,000       1.634    .9575808          1          8
+
+SECTION 4: LASSO VARIANTS - PREDICTION ERROR (Post-Lasso MSE)
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+         mcv |      1,000    6.477487    10.04802   .7758753   265.2842
+         mad |      1,000    6.250471    10.36267   .7601922   285.5262
+         mpi |      1,000    6.257245    10.37116   .7601922   285.5262
+------------------------------------------------------------------
+
+. capture log close
